@@ -1,0 +1,33 @@
+# Blender backups and crash logs
+*.blend[0-9]*
+*.blend@
+*.crash.txt
+
+# Python bytecode and tool caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local Python environments
+.venv/
+venv/
+
+# Add-on packages and local build artifacts
+/output/
+/build/
+/dist/
+*.egg-info/
+
+# Editor and OS files
+/.codex/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
