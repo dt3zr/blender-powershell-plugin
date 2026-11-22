@@ -12,6 +12,6 @@ From the repository root, run the Windows build wrapper:
 .\scripts\build.bat
 ```
 
-In Blender, go to **Edit → Preferences → Add-ons → Install from Disk**, select `output/powershell_console-0.1.0.zip`, and enable **PowerShell Console**. In the 3D View, press **N**, select **PowerShell**, and click **Open PowerShell Pane**.
+In Blender, go to **Edit → Preferences → Add-ons → Install from Disk**, select `output/powershell_console-0.1.0.zip`, and enable **PowerShell Console**. In the 3D View, press **N**, select **PowerShell**, set **Dock Side** to **Left** or **Right**, and click **Open PowerShell Pane**. Blender saves your selection in the add-on preferences. The default is **Right**.
 
 See the [project specifications](docs/specs.md) for compatibility details and limitations.
