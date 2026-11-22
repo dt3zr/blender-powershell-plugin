@@ -19,6 +19,7 @@ import threading
 import blf
 import bpy
 import gpu
+from bpy.app.handlers import persistent
 from gpu_extras.batch import batch_for_shader
 
 
@@ -554,11 +555,35 @@ class POWERSHELL_PT_sidebar(bpy.types.Panel):
 classes = (PowerShellPreferences, POWERSHELL_OT_open_pane, POWERSHELL_PT_sidebar)
 
 
-def register():
-    global draw_handle, font_id
+def load_terminal_font():
+    global font_id
     font_id = blf.load(FONT_PATH)
     if font_id < 0:
         font_id = 0
+
+
+def unload_terminal_font():
+    global font_id
+    if font_id is not None and font_id > 0:
+        blf.unload(FONT_PATH)
+    font_id = None
+
+
+@persistent
+def release_font_before_file_load(_filepath):
+    unload_terminal_font()
+
+
+@persistent
+def restore_font_after_file_load(_filepath):
+    # Blender can reset the font registry while opening a file.
+    if font_id is None:
+        load_terminal_font()
+
+
+def register():
+    global draw_handle
+    load_terminal_font()
     for cls in classes:
         bpy.utils.register_class(cls)
     addon = bpy.context.preferences.addons.get(__package__)
@@ -568,10 +593,13 @@ def register():
             preferences.dock_side = last_dock_side
     draw_handle = bpy.types.SpaceConsole.draw_handler_add(draw_terminal, (), 'WINDOW', 'POST_PIXEL')
     bpy.app.timers.register(refresh_terminals, persistent=True)
+    bpy.app.handlers.load_pre.append(release_font_before_file_load)
+    bpy.app.handlers.load_post.append(restore_font_after_file_load)
+    bpy.app.handlers.load_post_fail.append(restore_font_after_file_load)
 
 
 def unregister():
-    global draw_handle, font_id, last_dock_side
+    global draw_handle, last_dock_side
     # Blender removes the add-on's preferences entry when it is disabled.
     addon = bpy.context.preferences.addons.get(__package__)
     if addon is not None:
@@ -582,8 +610,9 @@ def unregister():
     sessions.clear()
     bpy.types.SpaceConsole.draw_handler_remove(draw_handle, 'WINDOW')
     draw_handle = None
-    if font_id > 0:
-        blf.unload(FONT_PATH)
-    font_id = None
+    bpy.app.handlers.load_pre.remove(release_font_before_file_load)
+    bpy.app.handlers.load_post.remove(restore_font_after_file_load)
+    bpy.app.handlers.load_post_fail.remove(restore_font_after_file_load)
+    unload_terminal_font()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
