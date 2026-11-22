@@ -2,7 +2,7 @@
 
 ## Purpose and current status
 
-PowerShell Console 0.1.0 adds an interactive Windows PowerShell terminal to Blender. From the 3D View, press **N → PowerShell → Open PowerShell Pane**. The add-on splits that viewport vertically and docks the terminal on the right, in the same Blender window. Click inside the terminal and keep the pointer over it while typing. Drag the shared border to resize the pane.
+PowerShell Console 0.1.0 adds an interactive Windows PowerShell terminal to Blender. From the 3D View, press **N → PowerShell**, choose **Dock Side**, and click **Open PowerShell Pane**. The add-on splits the viewport vertically and docks the terminal in the same Blender window. **Right** is the default, and Blender saves the selection in the add-on preferences. Click inside the terminal and keep the pointer over it while typing. Drag the shared border to resize the pane.
 
 The terminal supports ordinary PowerShell commands and interactive terminal applications. Type `codex` to enter Codex’s full-screen interface. `codex exec` still works as a CLI command, but is no longer required for running Codex from Blender. OpenCode and Claude Code also reached their interactive startup screens in testing. The installed copy was verified in Blender 5.2.3 LTS, and Codex was left running in the docked pane at the end of the test.
 
@@ -37,7 +37,7 @@ To reproduce the vendor directory, run the following with Blender’s bundled Py
 2. Enable **PowerShell Console** in **Edit → Preferences → Add-ons**. If replacing an already loaded copy, reload the add-on or restart Blender.
 3. Open the pane from the 3D View sidebar. The initial working directory is the saved blend file’s parent directory, or the Windows user’s home directory for an unsaved scene. Use `Set-Location` to change it.
 4. Click the terminal and run the desired command. The terminal forwards ordinary text, arrows, Enter, Escape, and Ctrl combinations. Ctrl+V pastes from Blender’s clipboard. In the main shell buffer, scrolling moves through terminal history when the application has not requested mouse tracking.
-5. Type `exit` at the PowerShell prompt to end the shell. Use the sidebar button to start a fresh shell in its existing adjacent pane. You can also join the editor area back into the viewport or change its editor type to close the terminal session.
+5. Type `exit` at the PowerShell prompt to end the shell. Click **Open PowerShell Pane** with the same dock side selected to reuse the pane. To switch sides, exit the shell, join the old pane back into the 3D View, select the other side, and open a new pane. Joining the area or changing its editor type also closes a running session.
 
 ## High-level design
 
@@ -49,7 +49,7 @@ Blender input events → input queue → ConPTY → PowerShell → interactive C
          GPU and BLF renderer ← pyte ← output queue ← ConPTY
 ```
 
-1. **Pane creation.** The sidebar operator `powershell.open_pane` is available from the 3D View. It checks for PowerShell, starts the terminal session, and uses Blender’s `screen.area_split` operator with a vertical split factor of 0.67. The newly created area on the right becomes a Console editor. The left area retains the 3D View. The operator avoids opening a duplicate active adjacent terminal and can reuse an adjacent pane whose shell has exited.
+1. **Pane creation.** The 3D View sidebar operator `powershell.open_pane` checks both sides for managed panes. It reports the side of a running shell and reuses an exited pane on the selected side. To create a pane, it starts PowerShell, uses Blender’s `screen.area_split` with a vertical factor of 0.33 for Left or 0.67 for Right, and identifies the new area by its Blender pointer. The new area becomes a Console editor, and the original area retains the 3D View.
 2. **Terminal process.** `TerminalSession` creates a Windows pseudoconsole through `winpty.PTY` with its ConPTY backend. PowerShell starts with `-NoLogo` and inherits the environment, with `TERM=xterm-256color` and `COLORTERM=truecolor` set for terminal applications. Child applications see terminal handles and can use interactive input, terminal sizing, cursor control, and full-screen redraws.
 3. **I/O and resizing.** Background threads read terminal output and dispatch queued input and size changes. A Blender timer runs roughly every 30 ms to size the terminal from the editor region, drain output into the emulator, request redraws, and close sessions whose areas are no longer visible Console editors. Blender UI drawing and screen-buffer updates happen on the Blender thread.
 4. **Terminal state.** `TerminalScreen` wraps a normal `pyte.HistoryScreen` with 2,000 lines of history and a separate `pyte.Screen` for full-screen programs. It routes terminal events to the current buffer, switches buffers for DEC alternate-screen sequences, and forwards terminal replies from the parser to ConPTY. Returning from the interactive CLI restores the shell buffer.
@@ -93,6 +93,27 @@ Blender input events → input queue → ConPTY → PowerShell → interactive C
 1. Moved the add-on and its vendor dependencies under `src/powershell_console/` and added the Windows build script. Verified that the ZIP builds from the project root and from another working directory and excludes bytecode caches.
 2. Tested the ZIP in an isolated Blender 5.2.3 profile. Blender loaded version 0.1.0 and the packaged ConPTY session launched interactive Codex.
 3. The packaging smoke test exposed a native `WinptyError` when shutdown tried to cancel I/O after the pending operation was already gone. Updated the session to handle the native exception and verified Codex startup and session shutdown with the rebuilt ZIP.
+
+### Phase 5. Left/right PowerShell docking
+
+#### Recommended behavior
+
+Add a **Dock Side** selector under **3D Viewport → N → PowerShell**. Offer **Left** and **Right**, default to **Right**, and save the choice in Blender's add-on preferences. The selector applies the next time the user clicks **Open PowerShell Pane**.
+
+#### Implementation
+
+1. Use a vertical split factor of `0.33` for **Left** and `0.67` for **Right** so the terminal starts at about one-third of the original viewport width. Identify the newly created area by its Blender pointer before converting it to a Console, since its coordinates may still be stale after the split.
+2. Check both sides of the viewport for adjacent Consoles managed by the add-on. If a shell is active, report its current side and keep the session open. Reuse an exited pane on the selected side. If the exited pane is on the opposite side, prompt the user to join it back into the viewport before opening on the selected side.
+3. Consider **Move to Other Side** as a follow-up. Preserving a running shell during a move requires updating the session registry and modal input handler to use the destination area before cleanup runs. Preserving the terminal width also requires repositioning the divider.
+
+#### Verification
+
+1. Build the ZIP with `powershell -NoProfile -File .\scripts\build.ps1`, install it in Blender, and check that a fresh install defaults to **Right**.
+2. Open the pane on each side and confirm it starts at about one-third of the original viewport width. Run `Get-Location`, resize the pane, and exercise an installed full-screen terminal application on both sides.
+3. Change **Dock Side** while a shell is active and verify that opening again reports its current side and keeps a single session. Run `exit` and reopen on the same side to test reuse. Exit again, select the opposite side, verify the instruction to join the old pane, then join it and open on the selected side.
+4. Restart Blender and verify that the selected side persists. Disable and re-enable the add-on, then confirm that the pane opens on the selected side.
+
+The packaged build passed these checks in Blender 5.2.3 LTS with Python 3.13.13 and Windows PowerShell 5.1.26100.9818. The pane occupied 32.7% of the original viewport width on the right and 32.8% on the left. Resizing updated the terminal grid on both sides, and Codex opened full-screen and returned to the PowerShell prompt on both sides.
 
 ## Current limitations
 

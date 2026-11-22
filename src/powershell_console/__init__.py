@@ -41,6 +41,7 @@ ANSI_COLORS["brightyellow"] = ANSI_COLORS["brightbrown"]
 sessions = {}
 draw_handle = None
 font_id = None
+last_dock_side = None
 
 
 def load_dependencies():
@@ -379,8 +380,43 @@ def mouse_sequence(event, region, screen):
     return f"\x1b[<{code};{column};{row}{suffix}"
 
 
+def mark_preferences_dirty(_preferences, context):
+    context.preferences.is_dirty = True
+
+
+class PowerShellPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    dock_side: bpy.props.EnumProperty(
+        name="Dock Side",
+        description="Side of the 3D View for the next PowerShell pane",
+        items=(
+            ('LEFT', "Left", "Dock PowerShell to the left of the 3D View"),
+            ('RIGHT', "Right", "Dock PowerShell to the right of the 3D View"),
+        ),
+        default='RIGHT',
+        update=mark_preferences_dirty,
+    )
+
+    def draw(self, _context):
+        self.layout.prop(self, "dock_side")
+
+
+def adjacent_panes(area, areas):
+    for console in areas:
+        if console.type != 'CONSOLE' or console.y != area.y or console.height != area.height:
+            continue
+        session = sessions.get(console.as_pointer())
+        if session is None:
+            continue
+        if 0 <= area.x - (console.x + console.width) <= 8:
+            yield 'LEFT', console, session
+        elif 0 <= console.x - (area.x + area.width) <= 8:
+            yield 'RIGHT', console, session
+
+
 class POWERSHELL_OT_open_pane(bpy.types.Operator):
-    """Open an interactive PowerShell terminal on the right of the 3D View"""
+    """Open an interactive PowerShell terminal beside the 3D View"""
 
     bl_idname = "powershell.open_pane"
     bl_label = "Open PowerShell Pane"
@@ -390,24 +426,33 @@ class POWERSHELL_OT_open_pane(bpy.types.Operator):
         return context.area is not None and context.area.type == 'VIEW_3D'
 
     def execute(self, context):
+        area = context.area
+        screen = context.screen
+        side = context.preferences.addons[__package__].preferences.dock_side
+        panes = list(adjacent_panes(area, screen.areas))
+        for pane_side, _, session in panes:
+            if not session.ended:
+                self.report({'INFO'}, f"PowerShell is already open to the {pane_side.lower()}")
+                return {'CANCELLED'}
+
+        console = None
+        previous = None
+        for pane_side, pane, session in panes:
+            if pane_side == side:
+                console, previous = pane, session
+                break
+        if console is None and panes:
+            old_side = panes[0][0].lower()
+            self.report({'INFO'}, f"Join the {old_side} PowerShell pane back into the 3D View "
+                                  f"before opening a pane on the {side.lower()}")
+            return {'CANCELLED'}
+
         executable = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
         if os.name != "nt" or executable is None:
             self.report({'ERROR'}, "PowerShell was not found on this Windows system")
             return {'CANCELLED'}
 
-        area = context.area
-        screen = context.screen
         region = next(item for item in area.regions if item.type == 'WINDOW')
-        console = next((item for item in screen.areas
-                        if item.type == 'CONSOLE' and item.y == area.y
-                        and item.height == area.height
-                        and 0 <= item.x - (area.x + area.width) <= 8
-                        and item.as_pointer() in sessions), None)
-        previous = sessions.get(console.as_pointer()) if console is not None else None
-        if previous is not None and not previous.ended:
-            self.report({'INFO'}, "PowerShell is already open to the right")
-            return {'CANCELLED'}
-
         target_region = region if console is None else next(
             item for item in console.regions if item.type == 'WINDOW')
         columns, rows, _, _ = terminal_grid(target_region)
@@ -421,8 +466,11 @@ class POWERSHELL_OT_open_pane(bpy.types.Operator):
 
         if console is None:
             existing_areas = {item.as_pointer() for item in screen.areas}
+            # Blender keeps the larger half in the original area. The new area's
+            # pixel bounds may not be initialized until after the split.
+            factor = 0.33 if side == 'LEFT' else 0.67
             with context.temp_override(area=area, region=region):
-                status = bpy.ops.screen.area_split(direction='VERTICAL', factor=0.67)
+                status = bpy.ops.screen.area_split(direction='VERTICAL', factor=factor)
             console = next((item for item in screen.areas
                             if item.as_pointer() not in existing_areas), None)
             if 'FINISHED' not in status or console is None:
@@ -498,11 +546,12 @@ class POWERSHELL_PT_sidebar(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "PowerShell"
 
-    def draw(self, _context):
+    def draw(self, context):
+        self.layout.prop(context.preferences.addons[__package__].preferences, "dock_side")
         self.layout.operator(POWERSHELL_OT_open_pane.bl_idname, icon='CONSOLE')
 
 
-classes = (POWERSHELL_OT_open_pane, POWERSHELL_PT_sidebar)
+classes = (PowerShellPreferences, POWERSHELL_OT_open_pane, POWERSHELL_PT_sidebar)
 
 
 def register():
@@ -512,12 +561,21 @@ def register():
         font_id = 0
     for cls in classes:
         bpy.utils.register_class(cls)
+    addon = bpy.context.preferences.addons.get(__package__)
+    if addon is not None and last_dock_side is not None:
+        preferences = addon.preferences
+        if not preferences.is_property_set("dock_side"):
+            preferences.dock_side = last_dock_side
     draw_handle = bpy.types.SpaceConsole.draw_handler_add(draw_terminal, (), 'WINDOW', 'POST_PIXEL')
     bpy.app.timers.register(refresh_terminals, persistent=True)
 
 
 def unregister():
-    global draw_handle, font_id
+    global draw_handle, font_id, last_dock_side
+    # Blender removes the add-on's preferences entry when it is disabled.
+    addon = bpy.context.preferences.addons.get(__package__)
+    if addon is not None:
+        last_dock_side = addon.preferences.dock_side
     bpy.app.timers.unregister(refresh_terminals)
     for session in sessions.values():
         session.close()
